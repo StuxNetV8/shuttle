@@ -5,7 +5,10 @@ This project has been migrated from [ELN_file_watcher](https://github.com/ComPla
 
 Shuttle is a utility that facilitates seamless file transfer from a source device to a target location, specifically for Chemotion. It automates the movement of files from a specified source directory to a destination server using WebDAV or SFTP.
 
----
+## Fork Changes
+This fork changes the behaviour from the original branch. These are the currently implemented changes:
+1. **Logging is more detailed**
+2. **File mode now keeps original folder structure**
 
 ## **Setup Systems**
 
