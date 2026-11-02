@@ -130,10 +130,14 @@ func (m ProcessManager) doWork(quit chan int) {
 					if !info.IsDir() {
 						modified := info.ModTime()
 						diff := now.Sub(modified)
-						if m.isFileLocked(path) {
+						if lockErr := os.Rename(path, path); lockErr != nil {
+							if _, exists := lockedFiles[path]; !exists {
+								ErrorLogger.Printf("File postponed: path=%q reason=lock-check-failed error=%v; possibly locked or inaccessible, checking again next scan", path, lockErr)
+							}
 							lockedFiles[path] = struct{}{}
 						} else if _, exists := lockedFiles[path]; exists || diff < 2*m.args.duration {
 							if exists {
+								InfoLogger.Printf("File accessible again: path=%q", path)
 								delete(lockedFiles, path)
 							}
 							if relPath, err := filepath.Rel(m.args.src, path); err == nil {

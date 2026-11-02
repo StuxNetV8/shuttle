@@ -47,7 +47,7 @@ shuttle -src < source_directory_path > -duration < time_in_seconds > -dst < dest
 - < username >: Username for authentication.
 - < password >: Password for authentication.
 - Transfer Type (-type):
-  - file: Transfers individual files, ignoring the source directory structure.
+  - file: Transfers individual files as soon as each is ready, preserving paths relative to the source directory.
   - folder: Transfers entire folders only when all files in them are ready.
   - zip: Transfers folders as ZIP archives when all files in the folder are ready.
   - tar: Transfers folders as .tar.gz archives when all files in the folder are ready.

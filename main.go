@@ -14,8 +14,8 @@ import (
 )
 
 var (
-	InfoLogger        *log.Logger
-	ErrorLogger       *log.Logger
+	InfoLogger        = log.New(os.Stdout, "INFO: ", log.LstdFlags)
+	ErrorLogger       = log.New(os.Stderr, "ERROR: ", log.LstdFlags)
 	args              Args
 	tr                *http.Transport = nil
 	LogPath           string
@@ -123,16 +123,14 @@ func main() {
 
 	tm := newFileTransferManager(&args)
 	if err := tm.connect_to_server(); err != nil {
-		ErrorLogger.Println("Error connecting: ", err)
-		log.Fatal(err)
+		ErrorLogger.Printf("Initial connection failed: error=%v; queued files will retry on transfer scans", err)
 	}
 	go tm.doWork(quit)
 
 	if args.preconvert {
 		tmc := newConvertedTransferManager(&args)
 		if err := tmc.connect_to_server(); err != nil {
-			ErrorLogger.Println("Error connecting: ", err)
-			log.Fatal(err)
+			ErrorLogger.Printf("Initial converter connection failed: error=%v; queued files will retry on transfer scans", err)
 		}
 		go tmc.doWork(quit)
 	}

@@ -34,7 +34,16 @@ func (m *PrepareManager) doWork(quit chan int) {
 				ErrorLogger.Println(err)
 				break
 			}
-			tempPath, err := CopyPreTempDirectory(to_send)
+			var tempPath string
+			if m.args.sendType == "file" {
+				tempPath, err = CopyPreTempFile(m.args.src, to_send)
+			} else {
+				tempPath, err = CopyPreTempDirectory(to_send)
+			}
+			if err != nil {
+				ErrorLogger.Printf("Staging failed: source=%q error=%v; source retained", to_send, err)
+				continue
+			}
 			if m.args.sendType == "flat_tar" {
 				err := os.Remove(to_send)
 				if err != nil {

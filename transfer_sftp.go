@@ -4,11 +4,12 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"os"
-	"path/filepath"
-	"strings"
+	"path"
+	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -40,80 +41,75 @@ func (m *TransferManagerSftp) connect_to_server() error {
 		Auth: []ssh.AuthMethod{
 			ssh.Password(password),
 		},
+		Timeout:         15 * time.Second,
 		HostKeyCallback: ssh.HostKeyCallback(func(hostname string, remote net.Addr, key ssh.PublicKey) error { return nil }),
 	}
 
 	dst := m.dst.Host
 
+	if m.client != nil {
+		_ = m.client.Close()
+		m.client = nil
+	}
 	if m.conn != nil {
 		_ = m.conn.Close()
-		_ = m.client.Close()
+		m.conn = nil
 	}
+	InfoLogger.Printf("SFTP connecting: client=%q host=%q user=%q", m.args.name, dst, user)
 
 	conn, err := ssh.Dial("tcp", dst, config)
 	if err != nil {
-		return err
+		return fmt.Errorf("SSH connect host=%q user=%q: %v", dst, user, err)
 	}
 
 	// create new SFTP client
 	client, err := sftp.NewClient(conn)
 	if err != nil {
-		defer conn.Close()
-		return err
+		_ = conn.Close()
+		return fmt.Errorf("SFTP session host=%q: %v", dst, err)
 	}
 
 	m.client = client
 	m.conn = conn
 
-	InfoLogger.Println("SSH Connected!")
+	InfoLogger.Printf("SFTP connected: client=%q host=%q user=%q", m.args.name, dst, user)
 	return nil
 }
 
-// send_file sends a file via WebDAV
-func (m *TransferManagerSftp) send_file(path_to_file string, file os.FileInfo) (bool, error) {
-	var webdavFilePath, urlPathDir string
-
-	err := m.connect_to_server()
+// send_file confirms success only after the remote file has closed successfully.
+func (m *TransferManagerSftp) send_file(filename string, file os.FileInfo) (bool, error) {
+	remote, err := m.DestCredentials.remotePath(filename)
 	if err != nil {
 		return false, err
 	}
-	if m.args.sendType == "file" {
-		webdavFilePath = file.Name()
-	} else if relpath, err := filepath.Rel(TempPath, path_to_file); err == nil {
-		webdavFilePath = strings.Replace(relpath, string(os.PathSeparator), "/", -1)
-		webdavFilePath = strings.TrimPrefix(webdavFilePath, "./")
-	} else {
+	src, err := os.Open(filename)
+	if err != nil {
+		return false, fmt.Errorf("open local file %q (possibly locked or inaccessible): %v", filename, err)
+	}
+	defer src.Close()
+	if err := m.connect_to_server(); err != nil {
 		return false, err
 	}
-	webdavFilePath = filepath.Join(m.dst.Path, webdavFilePath)
-	urlPathDir = filepath.Dir(webdavFilePath)
-	urlPathDir = strings.Replace(urlPathDir, string(os.PathSeparator), "/", -1)
-	webdavFilePath = strings.Replace(webdavFilePath, string(os.PathSeparator), "/", -1)
-	InfoLogger.Println("Sending...", webdavFilePath)
-
-	if urlPathDir != "." {
-		err := m.client.MkdirAll(urlPathDir)
-		if err != nil {
-			return false, err
+	// Close every session, including failed transfers; next attempt reconnects.
+	defer func() { _ = m.client.Close(); _ = m.conn.Close(); m.client = nil; m.conn = nil }()
+	InfoLogger.Printf("SFTP upload: source=%q destination=%q host=%q bytes=%d", filename, remote, m.dst.Host, file.Size())
+	if dir := path.Dir(remote); dir != "." {
+		if err := m.client.MkdirAll(dir); err != nil {
+			return false, fmt.Errorf("SFTP mkdir %q: %v", dir, err)
 		}
 	}
-
-	srcFile, err := os.Open(path_to_file)
+	dst, err := m.client.OpenFile(remote, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("SFTP open destination %q: %v", remote, err)
 	}
-	defer srcFile.Close()
-
-	dstFile, err := m.client.OpenFile(webdavFilePath, (os.O_WRONLY | os.O_CREATE | os.O_TRUNC))
-	if err != nil {
-		return false, err
+	copied, copyErr := io.Copy(dst, src)
+	closeErr := dst.Close()
+	if copyErr != nil {
+		return false, fmt.Errorf("SFTP copy %q -> %q after %d bytes: %v", filename, remote, copied, copyErr)
 	}
-	defer dstFile.Close()
-
-	_, err = io.Copy(dstFile, srcFile)
-	if err != nil {
-		return false, err
+	if closeErr != nil {
+		return false, fmt.Errorf("SFTP close destination %q after %d bytes: %v", remote, copied, closeErr)
 	}
-
+	InfoLogger.Printf("SFTP upload completed: destination=%q bytes=%d", remote, copied)
 	return true, nil
 }

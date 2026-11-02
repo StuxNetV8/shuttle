@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
@@ -14,7 +15,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 )
+
+// Protect publication into the spool from concurrent scanning/upload.
+var spoolMutex sync.Mutex
 
 // getRootDir returns the root directory, i.e., the first directory in the path.
 // If the path is relative <root>/../<file> it returns the relative root.
@@ -110,6 +115,22 @@ func AreEqual(a, b []string) bool {
 	return true
 }
 
+// CopyPreTempFile preserves the path relative to the configured source root.
+func CopyPreTempFile(sourceRoot, filename string) (string, error) {
+	rel, err := relativeTransferPath(sourceRoot, filename)
+	if err != nil {
+		return "", err
+	}
+	dst := filepath.Join(PreTempPath, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return "", err
+	}
+	if err := Copy(filename, dst); err != nil {
+		return "", err
+	}
+	return dst, nil
+}
+
 func CopyPreTempDirectory(scrDir string) (string, error) {
 	_ = os.MkdirAll(PreTempPath, os.ModePerm)
 	newPath := filepath.Base(scrDir)
@@ -118,6 +139,8 @@ func CopyPreTempDirectory(scrDir string) (string, error) {
 }
 
 func CopyTempDirectory() error {
+	spoolMutex.Lock()
+	defer spoolMutex.Unlock()
 	entries, err := ReadDirCompat(PreTempPath)
 	if err != nil {
 		return err
@@ -136,13 +159,18 @@ func CopyTempDirectory() error {
 
 func copyDirectory(scrDir string, destDir string) error {
 	return filepath.Walk(scrDir, func(sourcePath string, fileInfo os.FileInfo, e error) error {
+		if e != nil {
+			return fmt.Errorf("scan source %q: %v", sourcePath, e)
+		}
 		destPath, err := filepath.Rel(filepath.Dir(scrDir), sourcePath)
 		if err != nil {
 			return err
 		}
 		destPath = filepath.Join(destDir, destPath)
 		if fileInfo.IsDir() {
-			_ = os.MkdirAll(destPath, 0755)
+			if err := os.MkdirAll(destPath, 0755); err != nil {
+				return err
+			}
 		} else {
 			if err := Copy(sourcePath, destPath); err != nil {
 				return err
@@ -153,32 +181,30 @@ func copyDirectory(scrDir string, destDir string) error {
 }
 
 func Copy(srcFile, dstFile string) error {
-	out, err := os.Create(dstFile)
-	if err != nil {
-		return err
-	}
-
-	defer func(out *os.File) {
-		if err := out.Close(); err != nil {
-			ErrorLogger.Println(err)
-		}
-	}(out)
-
 	in, err := os.Open(srcFile)
-	defer func(in *os.File) {
-		if err := in.Close(); err != nil {
-			ErrorLogger.Println(err)
-		}
-	}(in)
 	if err != nil {
-		return err
+		return fmt.Errorf("open source %q (possibly locked or inaccessible): %v", srcFile, err)
 	}
-
-	_, err = io.Copy(out, in)
+	defer in.Close()
+	// Publish only a completely copied and closed file. Failed copies leave
+	// an already queued file intact instead of truncating it.
+	out, err := os.CreateTemp(filepath.Dir(dstFile), ".shuttle-copy-*")
 	if err != nil {
-		return err
+		return fmt.Errorf("create staging file for %q: %v", dstFile, err)
 	}
-
+	temporary := out.Name()
+	defer os.Remove(temporary)
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return fmt.Errorf("copy %q to %q: %v", srcFile, dstFile, copyErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close staging file %q: %v", dstFile, closeErr)
+	}
+	if err := os.Rename(temporary, dstFile); err != nil {
+		return fmt.Errorf("publish staging file %q: %v", dstFile, err)
+	}
 	return nil
 }
 
@@ -207,8 +233,11 @@ func zipFolder(path_src string) (string, error) {
 	}(w)
 	err = filepath.Walk(path_src,
 		func(path string, info os.FileInfo, err error) error {
-			if info.IsDir() {
+			if err != nil {
 				return err
+			}
+			if info.IsDir() {
+				return nil
 			}
 
 			rel_path, err := filepath.Rel(path_src, path)
@@ -275,8 +304,11 @@ func tarFolder(path_src string) (string, error) {
 
 	err = filepath.Walk(path_src,
 		func(path string, info os.FileInfo, err error) error {
-			if info.IsDir() {
+			if err != nil {
 				return err
+			}
+			if info.IsDir() {
+				return nil
 			}
 
 			rel_path, err := filepath.Rel(path_src, path)

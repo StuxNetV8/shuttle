@@ -4,8 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
+	"path"
 	"time"
 
 	"github.com/StarmanMartin/gowebdav"
@@ -49,20 +48,15 @@ func (m *TransferManagerWebdav) send_file(path_to_file string, file os.FileInfo)
 	if err != nil {
 		return false, err
 	}
-	if m.args.sendType == "file" {
-		urlPathDir = "."
-		webdavFilePath = file.Name()
-	} else if relpath, err := filepath.Rel(TempPath, path_to_file); err == nil {
-		webdavFilePath = strings.Replace(relpath, string(os.PathSeparator), "/", -1)
-		webdavFilePath = strings.TrimPrefix(webdavFilePath, "./")
-		urlPathDir = filepath.Dir(webdavFilePath)
-	} else {
+	webdavFilePath, err = relativeTransferPath(m.srcDir, path_to_file)
+	if err != nil {
 		return false, err
 	}
+	urlPathDir = path.Dir(webdavFilePath)
 	InfoLogger.Println("Sending...", webdavFilePath)
 
 	if urlPathDir != "." {
-		err := m.client.MkdirAll(urlPathDir, 0644)
+		err := m.client.MkdirAll(urlPathDir, 0755)
 		if err != nil {
 			return false, err
 		}
@@ -82,5 +76,5 @@ func (m *TransferManagerWebdav) send_file(path_to_file string, file os.FileInfo)
 	}()
 	err = m.client.Write(webdavFilePath, bytes, 0644)
 
-	return true, err
+	return err == nil, err
 }
